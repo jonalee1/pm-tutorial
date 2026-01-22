@@ -25,26 +25,32 @@ st.set_page_config(
 # CORE ALGORITHM
 # ============================================================================
 
-def water_filling_step_by_step(y, n_steps=50):
+def water_filling_step_by_step(y, n_steps=50, c_scale=1.0):
     """
     Compute salience via water-filling with step-by-step tracking.
     
-    Returns history of threshold values and corresponding salience allocations.
+    Args:
+        y: Response vector
+        n_steps: Number of steps for animation
+        c_scale: Factor to scale curvature cost (1.0 = standard, <1.0 = sharper/aggressive)
     """
     J = len(y)
     eta = np.sum(np.maximum(y, 0.1))  # Volume estimate
     
     # Reconstruction drives: how much each indicator "wants" salience
     d = eta * y
-    c = eta ** 2  # Curvature cost (same for all indicators here)
+    
+    # Curvature cost: Standard is eta^2. Lowering this makes competition more aggressive.
+    c = (eta ** 2) * c_scale
     
     # The unconstrained optimal for each indicator
-    s_unconstrained = d / c  # = y / eta
+    s_unconstrained = d / c 
     
     # Find the range for threshold search
     # Threshold ν must be such that s_j = max(0, (d_j + ν)/c) sums to 1
-    nu_min = -np.max(d) - 1
-    nu_max = c - np.min(d) + 1
+    # We broaden the search range to account for varying c
+    nu_min = -np.max(d) - c
+    nu_max = c - np.min(d) + c
     
     # Track history for visualization
     history = []
@@ -84,18 +90,18 @@ def water_filling_step_by_step(y, n_steps=50):
     }
 
 
-def compute_final_salience(y):
+def compute_final_salience(y, c_scale=1.0):
     """Compute final salience via precise bisection."""
     J = len(y)
     eta = np.sum(np.maximum(y, 0.1))
     d = eta * y
-    c = eta ** 2
+    c = (eta ** 2) * c_scale
     
     def salience_sum(nu):
         return np.sum(np.maximum(0, (d + nu) / c))
     
     # Bisection
-    nu_low, nu_high = -np.max(d) - c, c
+    nu_low, nu_high = -np.max(d) - c*2, c*2
     for _ in range(100):
         nu_mid = (nu_low + nu_high) / 2
         if salience_sum(nu_mid) > 1:
@@ -104,7 +110,12 @@ def compute_final_salience(y):
             nu_low = nu_mid
     
     s = np.maximum(0, (d + nu_mid) / c)
-    s = s / np.sum(s)
+    # Ensure exact sum to 1 despite float errors
+    if np.sum(s) > 0:
+        s = s / np.sum(s)
+    else:
+        s = np.ones(J)/J
+        
     return s, nu_mid, eta
 
 
@@ -115,19 +126,11 @@ def compute_final_salience(y):
 st.title("🌊 Competitive Salience-Reconstruction")
 st.markdown("### How Indicators Compete for Measurement Attention")
 
-st.markdown("""
-This interactive demo shows the **water-filling algorithm** that determines 
-how response emphasis is allocated across indicators in CSR.
-
-**Key insight**: Indicators must "compete" for salience because the total must sum to 1.
-Higher responses earn more salience, but the simplex constraint creates trade-offs.
-""")
-
 # Sidebar for input
 st.sidebar.header("📊 Response Profile")
-st.sidebar.markdown("Enter responses (1-5 scale) for each indicator:")
+st.sidebar.markdown("Enter responses (1-5 scale):")
 
-# -- Callbacks for Buttons (Fixed) --
+# -- Callbacks for Buttons --
 def set_uniform():
     for i in range(5):
         st.session_state[f"item_{i}"] = 3
@@ -146,28 +149,115 @@ for i, (label, default) in enumerate(zip(item_labels, default_responses)):
     val = st.sidebar.slider(label, min_value=1, max_value=5, value=default, key=f"item_{i}")
     responses.append(val)
 
-y = np.array(responses, dtype=float)
+y_input = np.array(responses, dtype=float)
 
 # Preset examples
 st.sidebar.markdown("---")
 st.sidebar.markdown("**Quick Examples:**")
 col1, col2 = st.sidebar.columns(2)
-
-# Use callbacks instead of inline logic
 col1.button("Uniform", on_click=set_uniform)
 col2.button("Skewed", on_click=set_skewed)
 
+# Break Equivalence Toggle
+st.sidebar.markdown("---")
+break_equiv = st.sidebar.checkbox(
+    "Break Equivalence\n(Aggressive Competition)",
+    value=False,
+    help="Adds noise and increases competition to show how Salience differs from Normalization."
+)
+
+if break_equiv:
+    st.sidebar.warning("⚠️ **Mode Active**: Adding noise and forcing sparsity.")
+    # Add noise
+    np.random.seed(42) # Fixed seed for consistency while toggling
+    noise = np.random.normal(0, 0.4, size=y_input.shape)
+    y_effective = np.maximum(0.1, y_input + noise)
+    c_factor = 0.15 # Aggressive competition
+else:
+    y_effective = y_input
+    c_factor = 1.0 # Standard
+
 # Compute results
-results = water_filling_step_by_step(y)
-final_s, final_nu, eta = compute_final_salience(y)
+results = water_filling_step_by_step(y_effective, c_scale=c_factor)
+final_s, final_nu, eta = compute_final_salience(y_effective, c_scale=c_factor)
+simple_norm = y_effective / np.sum(y_effective)
 
 # ============================================================================
 # MAIN VISUALIZATION
 # ============================================================================
 
-tab1, tab2, tab3 = st.tabs(["🎬 Animation", "📐 The Math", "🔬 Deep Dive"])
+tab_contrast, tab_anim, tab_math, tab_deep = st.tabs(["⚖️ Contrast", "🎬 Animation", "📐 The Math", "🔬 Deep Dive"])
 
-with tab1:
+with tab_contrast:
+    st.markdown("### Simple Normalization vs. Competitive Salience")
+    st.markdown("""
+    Compare **Simple Normalization** (just dividing by the sum) with **Salience** (water-filling).
+    
+    * **Standard Mode**: They look similar. This is why people confuse them.
+    * **Break Equivalence Mode**: Toggle the sidebar option to see them diverge. Normalization stays smooth; Salience forces choices.
+    """)
+    
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    
+    # 1. Raw Responses (Ghosted/Background) - Secondary Axis
+    fig.add_trace(
+        go.Bar(
+            x=item_labels,
+            y=y_effective,
+            name="Raw Response (1-5)",
+            marker_color='gray',
+            opacity=0.2,
+            offsetgroup=0
+        ),
+        secondary_y=True
+    )
+    
+    # 2. Simple Normalization
+    fig.add_trace(
+        go.Bar(
+            x=item_labels,
+            y=simple_norm,
+            name="Simple Normalization",
+            marker_color='#45B7D1',  # Blue
+            offsetgroup=1
+        ),
+        secondary_y=False
+    )
+    
+    # 3. Salience (CSR)
+    fig.add_trace(
+        go.Bar(
+            x=item_labels,
+            y=final_s,
+            name="Salience (Water-Filling)",
+            marker_color='#FF6B6B',  # Red
+            offsetgroup=2
+        ),
+        secondary_y=False
+    )
+    
+    fig.update_layout(
+        barmode='group',
+        height=500,
+        title_text="Allocating Attention: Proportional vs. Competitive",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
+    
+    # Set y-axes titles
+    fig.update_yaxes(title_text="Allocation (Probability)", secondary_y=False, range=[0, max(1.0, max(final_s)*1.1)])
+    fig.update_yaxes(title_text="Raw Scale (1-5)", secondary_y=True, showgrid=False, range=[0, 6])
+
+    st.plotly_chart(fig, use_container_width=True)
+    
+    if break_equiv:
+        st.info("""
+        **Observation:** Notice how **Simple Normalization** keeps every item alive, merely scaling the noise. 
+        In contrast, **Salience** eliminates the weak signals entirely (forcing sparsity) and amplifies the winners.
+        This "winner-take-all" dynamic is the essence of competition.
+        """)
+
+
+with tab_anim:
     st.markdown("## Watch Indicators Compete")
     
     # Animation controls
@@ -187,7 +277,7 @@ with tab1:
     fig = make_subplots(
         rows=2, cols=2,
         subplot_titles=(
-            "Response Profile (Input)",
+            "Response Profile (Effective Input)",
             "Salience Allocation (Output)",
             "Competition Dynamics",
             "Who's Active?"
@@ -200,7 +290,7 @@ with tab1:
     
     # Panel 1: Response profile
     fig.add_trace(
-        go.Bar(x=item_labels, y=y, marker_color=colors, name="Response"),
+        go.Bar(x=item_labels, y=y_effective, marker_color=colors, name="Response"),
         row=1, col=1
     )
     
@@ -223,7 +313,7 @@ with tab1:
     fig.add_trace(
         go.Bar(
             x=item_labels, 
-            y=y,
+            y=y_effective,
             marker_color=colors,
             name="Claim Height",
             opacity=0.7
@@ -232,11 +322,12 @@ with tab1:
     )
     
     # Add threshold line
+    threshold_h_val = max(0, threshold_line)
     fig.add_hline(
-        y=max(0, threshold_line), 
+        y=threshold_h_val, 
         line_dash="dash", 
         line_color="red",
-        annotation_text=f"Threshold = {max(0, threshold_line):.2f}",
+        annotation_text=f"Threshold",
         row=2, col=1
     )
     
@@ -266,102 +357,52 @@ with tab1:
     st.plotly_chart(fig, use_container_width=True)
     
     # Interpretation
-    st.markdown("### 🎯 What's Happening?")
-    
     n_active = sum(current['active'])
     active_items = [item_labels[i] for i in range(5) if current['active'][i]]
     inactive_items = [item_labels[i] for i in range(5) if not current['active'][i]]
     
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("Active Indicators", f"{n_active} / 5")
-    with col2:
-        st.metric("Sum of Salience", f"{current['s_sum']:.3f}", 
-                  delta=f"{current['s_sum'] - 1:.3f} from target")
-    with col3:
-        winner_idx = np.argmax(current['s_normalized'])
-        st.metric("Current Winner", item_labels[winner_idx])
-    
     if inactive_items:
-        st.info(f"**Eliminated from competition:** {', '.join(inactive_items)} — their responses are below the threshold")
+        st.info(f"**Eliminated:** {', '.join(inactive_items)}")
     
     if abs(current['s_sum'] - 1) < 0.05:
-        st.success("✅ **Equilibrium reached!** The threshold is set so total salience = 1")
+        st.success("✅ **Equilibrium reached!**")
 
 
-with tab2:
+with tab_math:
     st.markdown("## The Mathematics of Competition")
     
-    st.markdown("""
+    st.markdown(r"""
     ### The Optimization Problem
     
-    For a response vector $\mathbf{y}$ and volume $\eta$, we seek salience $\mathbf{s}$ that minimizes 
-    reconstruction error subject to the simplex constraint:
+    Minimizing reconstruction error subject to the simplex constraint yields the KKT solution:
     
-    $$\min_{\mathbf{s}} \sum_{j=1}^{J} (y_j - \eta \cdot s_j)^2 \quad \text{subject to} \quad s_j \geq 0, \quad \sum_j s_j = 1$$
+    $$s_j^* = \max\left(0, \frac{d_j + \nu}{c}\right)$$
     
-    ### The KKT Solution
+    where $d_j = \eta \cdot y_j$ is the **drive** and $c = \eta^2$ is the **cost**.
     
-    The closed-form solution via Karush-Kuhn-Tucker conditions is:
+    ### Breaking Equivalence
     
-    $$s_j^* = \max\left(0, \\frac{d_j + \\nu}{c}\\right)$$
+    When we "Break Equivalence", we lower the cost $c$ (or increase the drives relative to cost). 
+    This makes the slope of the water-filling function steeper.
     
-    where:
-    - $d_j = \eta \cdot y_j$ is the **reconstruction drive** (how much indicator $j$ "wants" salience)
-    - $c = \eta^2$ is the **curvature cost** (diminishing returns)
-    - $\\nu$ is the **Lagrange multiplier** (the "water level" or threshold)
-    
-    ### The Competition Mechanism
-    
-    The threshold $\\nu$ is found by solving $\sum_j s_j^* = 1$. This creates competition:
-    
-    1. **High-response indicators** have high drives $d_j$, so they exceed the threshold easily
-    2. **Low-response indicators** may fall below threshold and receive $s_j = 0$
-    3. **The threshold adjusts** to ensure total allocation equals exactly 1
+    - **High Cost (Standard)**: The function is flat. Small differences in $y$ create small differences in $s$. Result $\approx$ Proportional.
+    - **Low Cost (Aggressive)**: The function is steep. Small differences in $y$ push some items below the threshold. Result $\neq$ Proportional.
     """)
-    
-    # Show actual values
-    st.markdown("### Your Current Values")
     
     col1, col2 = st.columns(2)
-    
     with col1:
-        st.markdown("**Reconstruction Drives ($d_j = \eta \cdot y_j$)**")
-        for i, (label, d_val) in enumerate(zip(item_labels, results['d'])):
-            st.write(f"{label}: {d_val:.2f}")
-    
+        st.metric("Curvature Cost (c)", f"{results['c']:.2f}")
     with col2:
-        st.markdown("**Final Salience Allocation**")
-        for i, (label, s_val) in enumerate(zip(item_labels, final_s)):
-            bar = "█" * int(s_val * 20)
-            st.write(f"{label}: {s_val:.3f} ({s_val*100:.1f}%) {bar}")
-    
-    st.markdown(f"""
-    **Volume (η):** {eta:.2f}  
-    **Optimal Threshold (ν):** {final_nu:.4f}  
-    **Curvature Cost (c):** {results['c']:.2f}
-    """)
+        st.metric("Threshold (ν)", f"{final_nu:.2f}")
 
 
-with tab3:
-    st.markdown("## Deep Dive: The Water-Filling Metaphor")
+with tab_deep:
+    st.markdown("## Deep Dive: Water-Filling Visualization")
     
-    st.markdown("""
-    Imagine each indicator as a **container** whose height is proportional to the response value.
-    We pour "water" (salience) into these containers:
-    
-    1. Water rises uniformly across all containers
-    2. Taller containers capture more water
-    3. Short containers may get no water at all if the water level doesn't reach them
-    4. The total water is fixed at 1 (the simplex constraint)
-    """)
-    
-    # Create water-filling visualization
     fig = go.Figure()
     
     # Container outlines
-    for i, (label, response) in enumerate(zip(item_labels, y)):
-        # Container (rectangle)
+    for i, (label, response) in enumerate(zip(item_labels, y_effective)):
         fig.add_shape(
             type="rect",
             x0=i-0.3, x1=i+0.3,
@@ -370,9 +411,8 @@ with tab3:
             fillcolor="rgba(255,255,255,0)"
         )
         
-        # Water level (filled portion based on salience)
-        water_height = final_s[i] * response / (final_s[i] if final_s[i] > 0 else 1)
-        water_height = min(response, final_s[i] * eta)  # Actual reconstruction
+        # Water level
+        water_height = min(response, final_s[i] * eta)
         
         fig.add_shape(
             type="rect",
@@ -389,36 +429,19 @@ with tab3:
         y=threshold_height,
         line_dash="dash",
         line_color="blue",
-        annotation_text="Water Level (threshold)"
+        annotation_text="Water Level"
     )
     
     fig.update_layout(
         title="Water-Filling Visualization",
-        xaxis=dict(
-            tickmode='array',
-            tickvals=list(range(5)),
-            ticktext=item_labels
-        ),
+        xaxis=dict(tickmode='array', tickvals=list(range(5)), ticktext=item_labels),
         yaxis=dict(title="Response / Reconstruction"),
         height=400,
         showlegend=False
     )
     
     st.plotly_chart(fig, use_container_width=True)
-    
-    st.markdown("""
-    ### Key Insight: Why Competition Matters
-    
-    The simplex constraint ($\sum s_j = 1$) is what creates competition. Without it, 
-    each indicator could receive unlimited salience. The constraint forces trade-offs:
-    
-    - **Zero-sum dynamics**: More salience to one indicator means less for others
-    - **Threshold selection**: Only indicators "worthy" enough get positive allocation
-    - **Automatic sparsity**: Low-response indicators may be eliminated entirely
-    
-    This competition is what makes salience meaningful as a measurement of **relative emphasis**.
-    """)
-
+    st.markdown("The dashed line represents the water level. Any container shorter than this line gets no water (salience = 0).")
 
 # ============================================================================
 # FOOTER
@@ -428,12 +451,4 @@ st.markdown("---")
 st.markdown("""
 **Reference:** This demo accompanies the paper *"Competitive Salience–Reconstruction: 
 Separating Intensity and Shape in Psychological Measurement"*
-
-The water-filling algorithm derives from convex optimization theory (Boyd & Vandenberghe, 2004) 
-and has applications in information theory, resource allocation, and now—psychological measurement.
 """)
-
-## Requirements file (`requirements.txt`):
-#streamlit>=1.28.0
-#numpy>=1.24.0
-#plotly>=5.18.0
