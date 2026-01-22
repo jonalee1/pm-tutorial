@@ -1,295 +1,366 @@
-"""
-Competitive Reconstruction: Visualizing Water-Filling in CSR
-=============================================================
-Interactive demonstration of how indicators compete for salience allocation.
-"""
-
 import streamlit as st
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-st.set_page_config(
-    page_title="CSR Water-Filling Demo",
-    page_icon="🌊",
-    layout="wide"
-)
+st.set_page_config(page_title="CSR: Competitive Salience", layout="wide")
 
-# ============================================================================
-# CORE ALGORITHM
-# ============================================================================
-
-def water_filling_step_by_step(y, n_steps=50, c_scale=1.0):
-    """
-    Compute salience via water-filling with step-by-step tracking.
-    """
-    J = len(y)
-    eta = np.sum(np.maximum(y, 0.1))  # Volume estimate
-    
-    # Reconstruction drives
-    d = eta * y
-    # Curvature cost - heavily affects the "sharpness" of competition
-    c = (eta ** 2) * c_scale
-    
-    # Range for threshold search
-    nu_min = -np.max(d) - c
-    nu_max = c - np.min(d) + c
-    
-    history = []
-    
-    # Bisection sweep
-    for step in range(n_steps):
-        nu = nu_min + (nu_max - nu_min) * step / (n_steps - 1)
-        s_raw = np.maximum(0, (d + nu) / c)
-        s_sum = np.sum(s_raw)
-        
-        if s_sum > 0:
-            s_normalized = s_raw / s_sum
-        else:
-            s_normalized = np.ones(J) / J
-            
-        history.append({
-            'step': step,
-            'nu': nu,
-            's_raw': s_raw.copy(),
-            's_sum': s_sum,
-            's_normalized': s_normalized.copy(),
-            'active': (s_raw > 0).astype(int)
-        })
-    
-    # Find best step
-    sums = [h['s_sum'] for h in history]
-    best_idx = np.argmin(np.abs(np.array(sums) - 1))
-    
-    return {
-        'history': history,
-        'best_idx': best_idx,
-        'd': d,
-        'c': c,
-        'eta': eta,
-        'y': y
+# Custom CSS
+st.markdown("""
+<style>
+    .stAlert {background-color: #1a1a2e; border: 1px solid #4a4a6a;}
+    .insight-box {
+        background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+        border-left: 4px solid #e94560;
+        padding: 15px;
+        margin: 10px 0;
+        border-radius: 0 8px 8px 0;
     }
+    .key-message {
+        background: #0f3460;
+        border: 2px solid #e94560;
+        padding: 12px;
+        border-radius: 8px;
+        text-align: center;
+        font-size: 1.1em;
+        margin: 15px 0;
+    }
+</style>
+""", unsafe_allow_html=True)
 
-def compute_final_salience(y, c_scale=1.0):
-    """Compute final precise salience."""
-    J = len(y)
-    eta = np.sum(np.maximum(y, 0.1))
-    d = eta * y
-    c = (eta ** 2) * c_scale
+def water_filling_salience(responses, threshold_v):
+    """
+    Compute salience via water-filling algorithm.
+    Returns salience vector and active indicator mask.
+    """
+    J = len(responses)
+    responses = np.array(responses, dtype=float)
     
-    def salience_sum(nu):
-        return np.sum(np.maximum(0, (d + nu) / c))
+    # Shift responses by threshold (water level)
+    shifted = responses - threshold_v
     
-    nu_low, nu_high = -np.max(d) - c*2, c*2
-    for _ in range(100):
-        nu_mid = (nu_low + nu_high) / 2
-        if salience_sum(nu_mid) > 1:
-            nu_high = nu_mid
-        else:
-            nu_low = nu_mid
+    # Only positive contributions are "above water"
+    above_water = np.maximum(0, shifted)
     
-    s = np.maximum(0, (d + nu_mid) / c)
-    if np.sum(s) > 0:
-        s = s / np.sum(s)
+    # Normalize to simplex (if any are above water)
+    total = above_water.sum()
+    if total > 0:
+        salience = above_water / total
     else:
-        s = np.ones(J)/J
-    return s, nu_mid, eta
+        # All underwater - uniform fallback
+        salience = np.ones(J) / J
+    
+    active = above_water > 0
+    return salience, active, above_water
 
-# ============================================================================
-# STREAMLIT UI
-# ============================================================================
+def simple_normalization(responses):
+    """Simple proportional normalization (what people confuse with salience)"""
+    responses = np.array(responses, dtype=float)
+    return responses / responses.sum()
 
-st.title("🌊 Competitive Salience-Reconstruction")
-st.markdown("### How Indicators Compete for Measurement Attention")
-
-# --- Sidebar Inputs ---
-st.sidebar.header("📊 Response Profile")
-
-# Callbacks
-def set_uniform():
+# =============================================================================
+# SIDEBAR
+# =============================================================================
+with st.sidebar:
+    st.header("📊 Response Profile")
+    st.caption("Enter responses (1-5 scale) for each indicator")
+    
+    # Quick presets
+    st.subheader("Quick Examples")
+    col1, col2, col3 = st.columns(3)
+    
+    if col1.button("Uniform", use_container_width=True):
+        st.session_state.responses = [3, 3, 3, 3, 3]
+    if col2.button("Skewed", use_container_width=True):
+        st.session_state.responses = [5, 4, 2, 1, 1]
+    if col3.button("Extreme", use_container_width=True):
+        st.session_state.responses = [5, 5, 1, 1, 1]
+    
+    # Initialize responses
+    if 'responses' not in st.session_state:
+        st.session_state.responses = [5, 4, 3, 2, 1]
+    
+    st.divider()
+    
+    # Response sliders
+    responses = []
     for i in range(5):
-        st.session_state[f"item_{i}"] = 3
-
-def set_skewed():
-    vals = [5, 5, 2, 1, 1]
-    for i, v in enumerate(vals):
-        st.session_state[f"item_{i}"] = v
-
-# Sliders
-default_responses = [5, 4, 2, 1, 3]
-item_labels = ["Item 1", "Item 2", "Item 3", "Item 4", "Item 5"]
-responses = []
-for i, (label, default) in enumerate(zip(item_labels, default_responses)):
-    val = st.sidebar.slider(label, min_value=1, max_value=5, value=default, key=f"item_{i}")
-    responses.append(val)
-y_input = np.array(responses, dtype=float)
-
-st.sidebar.markdown("---")
-col1, col2 = st.sidebar.columns(2)
-col1.button("Uniform", on_click=set_uniform)
-col2.button("Skewed", on_click=set_skewed)
-
-# --- THE TOGGLE ---
-st.sidebar.markdown("---")
-break_equiv = st.sidebar.checkbox(
-    "Break Equivalence",
-    value=False,
-    help="Adds noise and increases competition to demonstrate why Salience != Normalization."
-)
-
-if break_equiv:
-    st.sidebar.warning("⚡ **High-Competition Mode**")
-    st.sidebar.markdown("""
-    * **Noise Added**: Simulating real-world imperfection.
-    * **Cost Lowered**: Competition is sharper.
-    * **Result**: Weak items drop to zero (Sparsity).
-    """)
-    np.random.seed(42)
-    noise = np.random.normal(0, 0.4, size=y_input.shape)
-    y_effective = np.maximum(0.1, y_input + noise)
-    c_factor = 0.2  # Aggressive competition
-else:
-    y_effective = y_input
-    c_factor = 1.0  # Standard
-
-# Calculations
-results = water_filling_step_by_step(y_effective, c_scale=c_factor)
-final_s, final_nu, eta = compute_final_salience(y_effective, c_scale=c_factor)
-simple_norm = y_effective / np.sum(y_effective)
-
-# ============================================================================
-# MAIN VISUALIZATION
-# ============================================================================
-
-tab1, tab2, tab3 = st.tabs(["🎬 Animation", "📐 The Math", "🔬 Deep Dive"])
-
-with tab1:
-    st.markdown("## Watch Indicators Compete")
-    
-    # Slider
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
-        step = st.slider(
-            "Water Level (Threshold ν)", 
-            min_value=0, 
-            max_value=len(results['history'])-1, 
-            value=results['best_idx']
+        val = st.slider(
+            f"Item {i+1}", 
+            min_value=1, 
+            max_value=5, 
+            value=st.session_state.responses[i],
+            key=f"item_{i}"
         )
-    current = results['history'][step]
+        responses.append(val)
+    st.session_state.responses = responses
     
-    # --- PLOT SETUP ---
-    # We use 'domain' type for Pie charts
-    fig = make_subplots(
-        rows=2, cols=2,
-        specs=[
-            [{"type": "xy"}, {"type": "domain"}],  # Row 1: Bar (xy), Pie (domain)
-            [{"type": "xy"}, {"type": "xy"}]       # Row 2: Bar (xy), Bar (xy)
-        ],
-        subplot_titles=(
-            "Response Profile (Input)",
-            "Allocation Strategy Comparison",
-            "Competition Dynamics",
-            "Who's Active?"
-        ),
-        vertical_spacing=0.15,
-        horizontal_spacing=0.1
+    st.divider()
+    
+    # Stress test controls
+    st.subheader("⚡ Stress Test")
+    st.caption("Break the 'normalization equivalence'")
+    
+    threshold_v = st.slider(
+        "Water Level (threshold)", 
+        min_value=0.0, 
+        max_value=4.0, 
+        value=1.0,
+        step=0.1,
+        help="Raise this to see indicators drop out"
     )
     
-    colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7']
+    add_noise = st.checkbox("Add measurement noise", value=False)
+    noise_level = 0.0
+    if add_noise:
+        noise_level = st.slider("Noise SD", 0.1, 1.0, 0.3)
+
+# =============================================================================
+# MAIN CONTENT
+# =============================================================================
+
+st.title("Competitive Salience–Reconstruction")
+
+# Key message box
+st.markdown("""
+<div class="key-message">
+    💡 <strong>If this looks like simple normalization, raise the water level.</strong><br>
+    <small>Competition becomes visible when indicators start dropping out.</small>
+</div>
+""", unsafe_allow_html=True)
+
+# Apply noise if requested
+working_responses = np.array(responses, dtype=float)
+if add_noise and noise_level > 0:
+    np.random.seed(42)  # For reproducibility in demo
+    working_responses = working_responses + np.random.normal(0, noise_level, 5)
+    working_responses = np.clip(working_responses, 0.5, 5.5)
+
+# Compute both methods
+salience, active, above_water = water_filling_salience(working_responses, threshold_v)
+normalized = simple_normalization(working_responses)
+
+# Count active indicators
+n_active = active.sum()
+
+# =============================================================================
+# VISUALIZATION
+# =============================================================================
+
+tab1, tab2, tab3 = st.tabs(["🎯 The Competition", "📐 The Math", "🔬 Deep Comparison"])
+
+with tab1:
+    st.subheader("Watch Indicators Compete for Salience")
     
-    # 1. TOP LEFT: INPUT (Bars)
-    fig.add_trace(
-        go.Bar(x=item_labels, y=y_effective, marker_color=colors, name="Response"),
+    col_left, col_right = st.columns([1, 1])
+    
+    with col_left:
+        st.markdown("### Panel A: Input Responses")
+        st.caption("What you observed")
+        
+        # Input bar chart with water level line
+        fig_input = go.Figure()
+        
+        colors_input = ['#4ecdc4' if a else '#95a5a6' for a in active]
+        
+        fig_input.add_trace(go.Bar(
+            x=[f"Item {i+1}" for i in range(5)],
+            y=working_responses,
+            marker_color=colors_input,
+            name="Response",
+            text=[f"{v:.1f}" for v in working_responses],
+            textposition='outside'
+        ))
+        
+        # Add water level line
+        fig_input.add_hline(
+            y=threshold_v, 
+            line_dash="dash", 
+            line_color="#e94560",
+            line_width=3,
+            annotation_text=f"Water Level = {threshold_v:.1f}",
+            annotation_position="top right",
+            annotation_font_color="#e94560"
+        )
+        
+        # Shade the "underwater" region
+        fig_input.add_hrect(
+            y0=0, y1=threshold_v,
+            fillcolor="#e94560", opacity=0.15,
+            line_width=0,
+            annotation_text="Below water = inactive",
+            annotation_position="bottom left"
+        )
+        
+        fig_input.update_layout(
+            height=350,
+            yaxis_range=[0, 6],
+            yaxis_title="Response Value",
+            showlegend=False,
+            template="plotly_dark",
+            margin=dict(t=30, b=30)
+        )
+        st.plotly_chart(fig_input, use_container_width=True)
+    
+    with col_right:
+        st.markdown("### Panel B: Competitive Salience")
+        st.caption("How reconstruction allocates capacity")
+        
+        # Salience bar chart
+        fig_salience = go.Figure()
+        
+        # Color by active/inactive
+        colors_salience = ['#00d4aa' if a else '#dc3545' for a in active]
+        
+        fig_salience.add_trace(go.Bar(
+            x=[f"Item {i+1}" for i in range(5)],
+            y=salience * 100,
+            marker_color=colors_salience,
+            name="Salience",
+            text=[f"{s*100:.1f}%" if a else "OUT" for s, a in zip(salience, active)],
+            textposition='outside',
+            textfont=dict(size=14, color=['white' if a else '#dc3545' for a in active])
+        ))
+        
+        fig_salience.update_layout(
+            height=350,
+            yaxis_range=[0, 100],
+            yaxis_title="Salience (%)",
+            showlegend=False,
+            template="plotly_dark",
+            margin=dict(t=30, b=30)
+        )
+        st.plotly_chart(fig_salience, use_container_width=True)
+    
+    # Status indicator
+    if n_active < 5:
+        st.success(f"🎯 **Competition is visible!** {5 - n_active} indicator(s) eliminated. Salience ≠ Normalization.")
+    else:
+        st.warning("⚠️ All indicators still active. Raise the water level to see competition eliminate weak indicators.")
+    
+    # The key insight box
+    st.markdown("""
+    <div class="insight-box">
+        <strong>🔑 Why this isn't normalization:</strong><br>
+        Simple normalization would give Item 5 some weight even if it's barely endorsed.<br>
+        Competitive salience can drive indicators to <strong>exactly zero</strong> — 
+        they're eliminated from measurement because they don't clear the threshold.
+    </div>
+    """, unsafe_allow_html=True)
+
+with tab2:
+    st.subheader("The Water-Filling Mechanism")
+    
+    st.markdown("""
+    **The Algorithm:**
+    1. Set a "water level" threshold $\\nu$
+    2. Each indicator's contribution = $\\max(0, y_j - \\nu)$
+    3. Indicators below water get **exactly zero** salience
+    4. Remaining capacity is distributed among active indicators
+    
+    **The Key Difference:**
+    - **Normalization**: $s_j = y_j / \\sum_k y_k$ — everyone gets something
+    - **Competitive Salience**: $s_j = \\max(0, y_j - \\nu) / \\sum_k \\max(0, y_k - \\nu)$ — weak indicators get nothing
+    """)
+    
+    # Show the math visually
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("**Responses above water:**")
+        for i, (y, aw, a) in enumerate(zip(working_responses, above_water, active)):
+            status = "✅" if a else "❌"
+            st.write(f"Item {i+1}: {y:.2f} - {threshold_v:.1f} = {aw:.2f} {status}")
+    
+    with col2:
+        st.markdown("**Salience allocation:**")
+        st.write(f"Sum of above-water: {above_water.sum():.2f}")
+        for i, (s, a) in enumerate(zip(salience, active)):
+            if a:
+                st.write(f"Item {i+1}: {above_water[i]:.2f} / {above_water.sum():.2f} = **{s*100:.1f}%**")
+            else:
+                st.write(f"Item {i+1}: **0%** (below water)")
+
+with tab3:
+    st.subheader("Side-by-Side: Normalization vs Competition")
+    
+    st.markdown("""
+    <div class="key-message">
+        🔍 <strong>The Critical Test:</strong> What happens to weak indicators?
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # Comparison table
+    comparison_data = {
+        "Item": [f"Item {i+1}" for i in range(5)],
+        "Response": [f"{y:.2f}" for y in working_responses],
+        "Simple Norm": [f"{n*100:.1f}%" for n in normalized],
+        "Competitive": [f"{s*100:.1f}%" if a else "**0%**" for s, a in zip(salience, active)],
+        "Difference": [f"{(s-n)*100:+.1f}%" for s, n in zip(salience, normalized)]
+    }
+    
+    st.table(comparison_data)
+    
+    # Visual comparison
+    fig_compare = make_subplots(
+        rows=1, cols=2,
+        subplot_titles=("Simple Normalization", "Competitive Salience"),
+        shared_yaxes=True
+    )
+    
+    fig_compare.add_trace(
+        go.Bar(
+            x=[f"Item {i+1}" for i in range(5)],
+            y=normalized * 100,
+            marker_color='#f39c12',
+            name="Normalized",
+            text=[f"{n*100:.1f}%" for n in normalized],
+            textposition='outside'
+        ),
         row=1, col=1
     )
     
-    # 2. TOP RIGHT: PIE CHART COMPARISON (Nested Donut)
-    # A) Salience (The "Real" Allocation)
-    fig.add_trace(
-        go.Pie(
-            labels=item_labels,
-            values=current['s_normalized'],
-            marker_colors=colors,
-            name="Salience",
-            hole=0.65,
-            direction='clockwise',
-            sort=False,
-            textinfo='percent',
-            textposition='outside',
-            domain={'x': [0.55, 1.0], 'y': [0.55, 1.0]} 
+    fig_compare.add_trace(
+        go.Bar(
+            x=[f"Item {i+1}" for i in range(5)],
+            y=salience * 100,
+            marker_color=['#00d4aa' if a else '#dc3545' for a in active],
+            name="Competitive",
+            text=[f"{s*100:.1f}%" if a else "OUT" for s, a in zip(salience, active)],
+            textposition='outside'
         ),
         row=1, col=2
     )
     
-    # 3. BOTTOM LEFT: DYNAMICS (Threshold)
-    threshold_val = max(0, -current['nu'] / results['eta'])
-    fig.add_trace(
-        go.Bar(
-            x=item_labels, y=y_effective, marker_color=colors, opacity=0.4, name="Claim"
-        ),
-        row=2, col=1
+    fig_compare.update_layout(
+        height=400,
+        showlegend=False,
+        template="plotly_dark"
     )
+    fig_compare.update_yaxes(range=[0, 80])
     
-    # FIXED: Replaced add_hline with a direct Scatter trace to avoid subplot errors
-    fig.add_trace(
-        go.Scatter(
-            x=item_labels, 
-            y=[threshold_val] * len(item_labels),
-            mode='lines',
-            line=dict(color='red', width=2, dash='dash'),
-            name='Threshold',
-            hoverinfo='skip'
-        ),
-        row=2, col=1
-    )
+    st.plotly_chart(fig_compare, use_container_width=True)
     
-    # 4. BOTTOM RIGHT: ACTIVE (Binary)
-    fig.add_trace(
-        go.Bar(
-            x=item_labels, y=current['active'], 
-            marker_color=[colors[i] if current['active'][i] else '#ccc' for i in range(5)],
-            name="Active"
-        ),
-        row=2, col=2
-    )
-    
-    # Layout Tweaks
-    fig.update_layout(
-        height=600, 
-        showlegend=False, 
-        annotations=[
-            dict(text="Salience<br>(Output)", x=0.84, y=0.82, font_size=12, showarrow=False, xref='paper', yref='paper')
-        ]
-    )
-    fig.update_yaxes(title_text="Response", row=1, col=1)
-    
-    st.plotly_chart(fig, use_container_width=True)
-    
-    # Comparison Text
-    if break_equiv:
-        st.info("💡 **Contrast:** In the Pie Chart (Top Right), notice how weak items vanish entirely. In 'Simple Normalization', they would still be thin slices. Salience cleans up the noise.")
-    
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Active Indicators", f"{sum(current['active'])} / 5")
-    col2.metric("Total Allocation", f"{current['s_sum']:.3f}", delta=f"{current['s_sum']-1:.3f}")
-    
-with tab2:
-    st.markdown("## The Mathematics")
-    st.latex(r"s_j^* = \max\left(0, \frac{d_j + \nu}{c}\right)")
-    st.markdown(f"**Curvature (c):** {results['c']:.2f} | **Threshold (ν):** {final_nu:.2f}")
+    # The punchline
+    if n_active < 5:
+        dropped = [i+1 for i, a in enumerate(active) if not a]
+        st.error(f"""
+        **The difference is now visible:**
+        - Normalization gives Items {dropped} small but nonzero weights
+        - Competition gives them **exactly zero** — they're out of the measurement
+        """)
+    else:
+        st.info("""
+        **Currently they look similar.** Raise the water level to see the divergence.
+        When indicators drop out, competition and normalization produce fundamentally different results.
+        """)
 
-with tab3:
-    # Water filling visual
-    fig_deep = go.Figure()
-    for i, (label, response) in enumerate(zip(item_labels, y_effective)):
-        fig_deep.add_shape(type="rect", x0=i-0.3, x1=i+0.3, y0=0, y1=response, line=dict(color=colors[i], width=3))
-        water_h = min(response, final_s[i] * eta)
-        fig_deep.add_shape(type="rect", x0=i-0.28, x1=i+0.28, y0=0, y1=water_h, fillcolor=colors[i], opacity=0.5, line_width=0)
-    
-    t_h = max(0, -final_nu/eta)
-    fig_deep.add_hline(y=t_h, line_dash="dash", line_color="blue", annotation_text="Water Level")
-    fig_deep.update_layout(height=400, title="Water Level Visualization", showlegend=False)
-    st.plotly_chart(fig_deep, use_container_width=True)
-
-st.markdown("---")
-st.markdown("**Reference:** *Competitive Salience–Reconstruction*")
+# =============================================================================
+# FOOTER
+# =============================================================================
+st.divider()
+st.caption("""
+**Key Insight**: Salience exists because reconstruction exists. The simplex constraint 
+forces indicators to compete for limited explanatory capacity. This is structural, 
+not just arithmetic rescaling.
+""")
