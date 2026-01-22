@@ -127,6 +127,16 @@ Higher responses earn more salience, but the simplex constraint creates trade-of
 st.sidebar.header("📊 Response Profile")
 st.sidebar.markdown("Enter responses (1-5 scale) for each indicator:")
 
+# -- Callbacks for Buttons (Fixed) --
+def set_uniform():
+    for i in range(5):
+        st.session_state[f"item_{i}"] = 3
+
+def set_skewed():
+    vals = [5, 5, 2, 1, 1]
+    for i, v in enumerate(vals):
+        st.session_state[f"item_{i}"] = v
+
 # Default example: heterogeneous profile
 default_responses = [5, 4, 2, 1, 3]
 item_labels = ["Item 1", "Item 2", "Item 3", "Item 4", "Item 5"]
@@ -142,13 +152,10 @@ y = np.array(responses, dtype=float)
 st.sidebar.markdown("---")
 st.sidebar.markdown("**Quick Examples:**")
 col1, col2 = st.sidebar.columns(2)
-if col1.button("Uniform"):
-    st.session_state.update({f"item_{i}": 3 for i in range(5)})
-    st.rerun()
-if col2.button("Skewed"):
-    for i, v in enumerate([5, 5, 2, 1, 1]):
-        st.session_state[f"item_{i}"] = v
-    st.rerun()
+
+# Use callbacks instead of inline logic
+col1.button("Uniform", on_click=set_uniform)
+col2.button("Skewed", on_click=set_skewed)
 
 # Compute results
 results = water_filling_step_by_step(y)
