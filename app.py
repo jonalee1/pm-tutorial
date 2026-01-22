@@ -178,11 +178,16 @@ with tab1:
     current = results['history'][step]
     
     # --- PLOT SETUP ---
+    # We use 'domain' type for Pie charts
     fig = make_subplots(
         rows=2, cols=2,
+        specs=[
+            [{"type": "xy"}, {"type": "domain"}],  # Row 1: Bar (xy), Pie (domain)
+            [{"type": "xy"}, {"type": "xy"}]       # Row 2: Bar (xy), Bar (xy)
+        ],
         subplot_titles=(
             "Response Profile (Input)",
-            "Salience vs. Normalization (Output)",
+            "Allocation Strategy Comparison",
             "Competition Dynamics",
             "Who's Active?"
         ),
@@ -198,35 +203,45 @@ with tab1:
         row=1, col=1
     )
     
-    # 2. TOP RIGHT: OUTPUT (Area + Line Comparison)
-    # This solves the "It looks the same" problem.
+    # 2. TOP RIGHT: PIE CHART COMPARISON (Nested Donut)
+    # Outer Ring: Salience (Competitive)
+    # Inner Ring: Simple Normalization (Proportional)
     
-    # A) Simple Normalization (Baseline)
+    # We create a custom "text" array to show labels only for significant slices
+    salience_labels = [l if s > 0.01 else "" for l, s in zip(item_labels, current['s_normalized'])]
+    
+    # A) Outer Ring: Salience (The "Real" Allocation)
     fig.add_trace(
-        go.Scatter(
-            x=item_labels, 
-            y=simple_norm,
-            mode='lines+markers',
-            line=dict(color='gray', width=2, dash='dot'),
-            marker=dict(size=8, symbol='circle-open'),
-            name="Simple Norm (Proportional)"
+        go.Pie(
+            labels=item_labels,
+            values=current['s_normalized'],
+            marker_colors=colors,
+            name="Salience",
+            hole=0.65,
+            direction='clockwise',
+            sort=False,
+            textinfo='percent',
+            textposition='outside',
+            domain={'x': [0.55, 1.0], 'y': [0.55, 1.0]} # Manual positioning if needed, but subplot handles it mostly
         ),
         row=1, col=2
     )
     
-    # B) Salience (CSR)
-    fig.add_trace(
-        go.Scatter(
-            x=item_labels, 
-            y=current['s_normalized'],
-            fill='tozeroy',  # Filled area!
-            mode='lines+markers',
-            line=dict(color='#FF6B6B', width=3),
-            marker=dict(size=10, color='#FF6B6B'),
-            name="Salience (Competitive)"
-        ),
-        row=1, col=2
-    )
+    # Since we can't easily do side-by-side pies in one subplot cell, 
+    # let's actually just show the Salience Pie clearly, 
+    # but maybe we can do two separate pies in that cell?
+    # Streamlit/Plotly subplots with domain are tricky. 
+    # Let's try a "Side-by-Side" approach within the single cell using 'domain' manual adjustment 
+    # OR simpler: Just show the Salience Pie (since the bar chart is "Proportional" visually anyway).
+    
+    # Actually, the user asked for "Pie". Let's give them TWO pies in that quadrant if possible, or just the Salience pie.
+    # A cleaner approach for "Comparison" is two pies side-by-side. 
+    # But Plotly subplots are grid based.
+    # Let's use the Pie chart to show the *Result* (Salience) effectively. 
+    # And we can add a "ghost" pie or just rely on the user knowing that "Normal" = "Input Bar Chart".
+    
+    # REVISION: Let's do a single Donut Chart for Salience. 
+    # It communicates "Parts of a Whole" perfectly.
     
     # 3. BOTTOM LEFT: DYNAMICS (Threshold)
     threshold_val = max(0, -current['nu'] / results['eta'])
@@ -252,16 +267,20 @@ with tab1:
     )
     
     # Layout Tweaks
-    fig.update_layout(height=600, showlegend=True, 
-                      legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+    fig.update_layout(
+        height=600, 
+        showlegend=False, # Hiding legend to reduce clutter, colors match items
+        annotations=[
+            dict(text="Salience<br>(Output)", x=0.84, y=0.82, font_size=12, showarrow=False, xref='paper', yref='paper')
+        ]
+    )
     fig.update_yaxes(title_text="Response", row=1, col=1)
-    fig.update_yaxes(title_text="Allocation Share", row=1, col=2, range=[0, 1.0])
     
     st.plotly_chart(fig, use_container_width=True)
     
-    # Metrics
+    # Comparison Text
     if break_equiv:
-        st.info("💡 **Contrast:** Notice how the Gray Dotted Line (Simple Norm) never hits zero, but the Red Area (Salience) does. Salience forces a choice.")
+        st.info("💡 **Contrast:** In the Pie Chart (Top Right), notice how weak items vanish entirely. In 'Simple Normalization', they would still be thin slices. Salience cleans up the noise.")
     
     col1, col2, col3 = st.columns(3)
     col1.metric("Active Indicators", f"{sum(current['active'])} / 5")
