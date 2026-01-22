@@ -204,13 +204,7 @@ with tab1:
     )
     
     # 2. TOP RIGHT: PIE CHART COMPARISON (Nested Donut)
-    # Outer Ring: Salience (Competitive)
-    # Inner Ring: Simple Normalization (Proportional)
-    
-    # We create a custom "text" array to show labels only for significant slices
-    salience_labels = [l if s > 0.01 else "" for l, s in zip(item_labels, current['s_normalized'])]
-    
-    # A) Outer Ring: Salience (The "Real" Allocation)
+    # A) Salience (The "Real" Allocation)
     fig.add_trace(
         go.Pie(
             labels=item_labels,
@@ -222,26 +216,10 @@ with tab1:
             sort=False,
             textinfo='percent',
             textposition='outside',
-            domain={'x': [0.55, 1.0], 'y': [0.55, 1.0]} # Manual positioning if needed, but subplot handles it mostly
+            domain={'x': [0.55, 1.0], 'y': [0.55, 1.0]} 
         ),
         row=1, col=2
     )
-    
-    # Since we can't easily do side-by-side pies in one subplot cell, 
-    # let's actually just show the Salience Pie clearly, 
-    # but maybe we can do two separate pies in that cell?
-    # Streamlit/Plotly subplots with domain are tricky. 
-    # Let's try a "Side-by-Side" approach within the single cell using 'domain' manual adjustment 
-    # OR simpler: Just show the Salience Pie (since the bar chart is "Proportional" visually anyway).
-    
-    # Actually, the user asked for "Pie". Let's give them TWO pies in that quadrant if possible, or just the Salience pie.
-    # A cleaner approach for "Comparison" is two pies side-by-side. 
-    # But Plotly subplots are grid based.
-    # Let's use the Pie chart to show the *Result* (Salience) effectively. 
-    # And we can add a "ghost" pie or just rely on the user knowing that "Normal" = "Input Bar Chart".
-    
-    # REVISION: Let's do a single Donut Chart for Salience. 
-    # It communicates "Parts of a Whole" perfectly.
     
     # 3. BOTTOM LEFT: DYNAMICS (Threshold)
     threshold_val = max(0, -current['nu'] / results['eta'])
@@ -251,9 +229,18 @@ with tab1:
         ),
         row=2, col=1
     )
-    fig.add_hline(
-        y=threshold_val, line_dash="dash", line_color="red", 
-        annotation_text="Threshold", row=2, col=1
+    
+    # FIXED: Replaced add_hline with a direct Scatter trace to avoid subplot errors
+    fig.add_trace(
+        go.Scatter(
+            x=item_labels, 
+            y=[threshold_val] * len(item_labels),
+            mode='lines',
+            line=dict(color='red', width=2, dash='dash'),
+            name='Threshold',
+            hoverinfo='skip'
+        ),
+        row=2, col=1
     )
     
     # 4. BOTTOM RIGHT: ACTIVE (Binary)
@@ -269,7 +256,7 @@ with tab1:
     # Layout Tweaks
     fig.update_layout(
         height=600, 
-        showlegend=False, # Hiding legend to reduce clutter, colors match items
+        showlegend=False, 
         annotations=[
             dict(text="Salience<br>(Output)", x=0.84, y=0.82, font_size=12, showarrow=False, xref='paper', yref='paper')
         ]
